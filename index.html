@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>EAFC Card Generator</title>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Rajdhani', sans-serif; background-color: #0f0f12; color: #fff; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        h1 { color: #00f2ff; text-transform: uppercase; text-shadow: 0 0 10px #00f2ff; }
+        .container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 1400px; }
+        .controls { background: #1a1a20; padding: 20px; border-radius: 12px; border: 1px solid #333; width: 300px; height: fit-content; }
+        .canvas-container { border: 2px solid #00f2ff; box-shadow: 0 0 20px rgba(0, 242, 255, 0.2); border-radius: 8px; overflow: hidden; }
+        
+        input, textarea, button { width: 100%; box-sizing: border-box; margin-bottom: 10px; background: #25252e; border: 1px solid #444; color: #fff; padding: 8px; border-radius: 4px; font-family: inherit; }
+        button { background: linear-gradient(90deg, #00f2ff, #008cff); border: none; font-weight: bold; cursor: pointer; color: #000; text-transform: uppercase; padding: 12px; }
+        button:hover { opacity: 0.9; }
+        label { font-size: 0.9em; color: #aaa; display: block; margin-bottom: 4px; }
+        
+        /* Hidden elements used for rendering */
+        #radarChartCanvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <h1>EAFC 26 Card Generator</h1>
+
+    <div class="container">
+        <div class="controls">
+            <h3>1. Input Data</h3>
+            <label>Paste Data Dump Here:</label>
+            <textarea id="dataPaste" rows="6" placeholder="Paste the text from the site here..."></textarea>
+            <button onclick="parseData()">Auto-Fill Form</button>
+            
+            <hr style="border-color: #333">
+            
+            <h3>2. Fine Tune</h3>
+            <label>Name</label>
+            <input type="text" id="pName" value="JUAN MATA">
+            
+            <div style="display:flex; gap:10px;">
+                <div><label>OVR</label><input type="text" id="pOvr" value="88"></div>
+                <div><label>POS</label><input type="text" id="pPos" value="CAM"></div>
+            </div>
+
+            <label>Card Image</label>
+            <input type="file" id="cardImageInput" accept="image/*">
+
+            <button onclick="generateImage()">GENERATE VISUAL</button>
+            <button onclick="downloadImage()" style="background: #333; color: #fff; border: 1px solid #555;">Download Image</button>
+        </div>
+
+        <div class="canvas-container">
+            <canvas id="mainCanvas" width="1200" height="675"></canvas>
+        </div>
+    </div>
+
+    <canvas id="tempChart" width="300" height="300" style="display:none;"></canvas>
+
+    <script>
+        // Default Stats
+        let stats = { pac: 86, sho: 85, pas: 90, dri: 90, def: 60, phy: 70 };
+        let attributes = [
+            "Acceleration 88", "Sprint Speed 85",
+            "Att. Position 96", "Finishing 86",
+            "Vision 91", "Crossing 90",
+            "Agility 88", "Balance 90",
+            "Interceptions 69", "Heading Acc 87",
+            "Jumping 60", "Stamina 85"
+        ]; // Simplified for v1
+        
+        const ctx = document.getElementById('mainCanvas').getContext('2d');
+        let uploadedCardImg = null;
+
+        // 1. PARSE FUNCTION (Simple Regex to find key data in the mess)
+        function parseData() {
+            const text = document.getElementById('dataPaste').value;
+            
+            // Try to find Name (Usually after the rating block in your specific dump format)
+            // This is tricky with raw text, so we rely on user manual fix if this fails
+            const nameMatch = text.match(/([A-Z][a-z]+ [A-Z][a-z]+)/); 
+            if(nameMatch) document.getElementById('pName').value = nameMatch[0].toUpperCase();
+
+            // Try to find Main Stats
+            const pac = text.match(/(\d{2})\s*Pac/);
+            const sho = text.match(/(\d{2})\s*Sho/);
+            const pas = text.match(/(\d{2})\s*Pas/);
+            const dri = text.match(/(\d{2})\s*Dri/);
+            const def = text.match(/(\d{2})\s*Def/);
+            const phy = text.match(/(\d{2})\s*Phy/);
+
+            if(pac) stats.pac = pac[1];
+            if(sho) stats.sho = sho[1];
+            if(pas) stats.pas = pas[1];
+            if(dri) stats.dri = dri[1];
+            if(def) stats.def = def[1];
+            if(phy) stats.phy = phy[1];
+            
+            // Try to find Overall/Pos
+            const ovr = text.match(/(\d{2})\s*([A-Z]{2,3})/); 
+            if(ovr) {
+                document.getElementById('pOvr').value = ovr[1];
+                document.getElementById('pPos').value = ovr[2];
+            }
+
+            alert("Data Parsed! Check the fields and click Generate.");
+        }
+
+        // 2. IMAGE UPLOADER
+        document.getElementById('cardImageInput').addEventListener('change', function(e) {
+            const reader = new FileReader();
+            reader.onload = function(event){
+                const img = new Image();
+                img.onload = function(){
+                    uploadedCardImg = img;
+                    generateImage();
+                }
+                img.src = event.target.result;
+            }
+            reader.readAsDataURL(e.target.files[0]);
+        });
+
+        // 3. DRAW RADAR CHART (Helper)
+        async function getRadarChartImage() {
+            return new Promise((resolve) => {
+                const chartCanvas = document.getElementById('tempChart');
+                // Destroy old chart if exists
+                let chartStatus = Chart.getChart("tempChart"); 
+                if (chartStatus != undefined) { chartStatus.destroy(); }
+
+                const myChart = new Chart(chartCanvas, {
+                    type: 'radar',
+                    data: {
+                        labels: ['PAC', 'SHO', 'PAS', 'DRI', 'DEF', 'PHY'],
+                        datasets: [{
+                            data: [stats.pac, stats.sho, stats.pas, stats.dri, stats.def, stats.phy],
+                            backgroundColor: 'rgba(0, 242, 255, 0.2)',
+                            borderColor: '#00f2ff',
+                            borderWidth: 2,
+                            pointBackgroundColor: '#fff'
+                        }]
+                    },
+                    options: {
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            r: {
+                                angleLines: { color: '#333' },
+                                grid: { color: '#333' },
+                                pointLabels: { color: '#fff', font: { size: 14, family: 'Rajdhani' } },
+                                min: 0, max: 100,
+                                ticks: { display: false }
+                            }
+                        },
+                        animation: false
+                    }
+                });
+                
+                // Wait for render then resolve
+                setTimeout(() => {
+                    resolve(chartCanvas);
+                }, 100);
+            });
+        }
+
+        // 4. MAIN GENERATOR
+        async function generateImage() {
+            // Background
+            const grd = ctx.createLinearGradient(0, 0, 1200, 675);
+            grd.addColorStop(0, "#050505");
+            grd.addColorStop(1, "#101015");
+            ctx.fillStyle = grd;
+            ctx.fillRect(0, 0, 1200, 675);
+
+            // Neon Grid Lines (Decoration)
+            ctx.strokeStyle = "#00f2ff";
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.2;
+            ctx.beginPath();
+            ctx.moveTo(350, 0); ctx.lineTo(350, 675); // Vertical Divider
+            ctx.moveTo(900, 0); ctx.lineTo(900, 675); // Vertical Divider 2
+            ctx.stroke();
+            ctx.globalAlpha = 1.0;
+
+            // -- LEFT SECTION: CARD --
+            if(uploadedCardImg) {
+                // Draw card (maintain aspect ratio roughly)
+                ctx.drawImage(uploadedCardImg, 40, 120, 280, 400);
+            } else {
+                // Placeholder
+                ctx.strokeStyle = "#333";
+                ctx.strokeRect(40, 120, 280, 400);
+                ctx.fillStyle = "#333";
+                ctx.textAlign = "center";
+                ctx.fillText("No Card Image", 180, 320);
+            }
+
+            // -- HEADER --
+            // Name
+            const name = document.getElementById('pName').value;
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 80px 'Rajdhani'";
+            ctx.textAlign = "right";
+            ctx.shadowColor = "#00f2ff";
+            ctx.shadowBlur = 15;
+            ctx.fillText(name, 1150, 90);
+            ctx.shadowBlur = 0;
+
+            // Rating / Pos
+            const ovr = document.getElementById('pOvr').value;
+            const pos = document.getElementById('pPos').value;
+            ctx.textAlign = "left";
+            ctx.font = "bold 60px 'Rajdhani'";
+            ctx.fillStyle = "#00f2ff"; // Neon Blue
+            ctx.fillText(ovr + " " + pos, 50, 90);
+
+            // -- MIDDLE SECTION: STATS & RADAR --
+            // Draw Radar Chart
+            const chartCanvas = await getRadarChartImage();
+            ctx.drawImage(chartCanvas, 380, 150, 300, 300);
+
+            // Draw Stat Numbers below radar
+            ctx.font = "bold 30px 'Rajdhani'";
+            ctx.textAlign = "center";
+            ctx.fillStyle = "#fff";
+            
+            // Simple visual list of stats
+            const statLabels = ["PAC", "SHO", "PAS", "DRI", "DEF", "PHY"];
+            const statValues = [stats.pac, stats.sho, stats.pas, stats.dri, stats.def, stats.phy];
+            
+            for(let i=0; i<6; i++) {
+                let x = 400 + (i * 85);
+                let y = 500;
+                
+                // Hexagon bg
+                ctx.fillStyle = "#1a1a20";
+                ctx.strokeStyle = "#00f2ff";
+                ctx.beginPath();
+                ctx.moveTo(x, y-30);
+                ctx.lineTo(x+35, y-10);
+                ctx.lineTo(x+35, y+30);
+                ctx.lineTo(x, y+50);
+                ctx.lineTo(x-35, y+30);
+                ctx.lineTo(x-35, y-10);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Text
+                ctx.fillStyle = "#00f2ff";
+                ctx.font = "bold 16px 'Rajdhani'";
+                ctx.fillText(statLabels[i], x, y-5);
+                ctx.fillStyle = "#fff";
+                ctx.font = "bold 28px 'Rajdhani'";
+                ctx.fillText(statValues[i], x, y+25);
+            }
+
+
+            // -- RIGHT SECTION: BIO --
+            ctx.textAlign = "left";
+            ctx.fillStyle = "#fff";
+            ctx.font = "24px 'Rajdhani'";
+            
+            let bioY = 150;
+            ctx.fillText("PLAYER DATA", 920, bioY);
+            ctx.fillStyle = "#00f2ff";
+            ctx.fillRect(920, bioY+10, 200, 2);
+            
+            // Fake data for visual layout (You can hook these up to inputs later)
+            const bioData = [
+                "Height: 170cm | 5'7\"",
+                "Foot: Left",
+                "Skill Moves: ★★★★",
+                "Weak Foot: ★★★★",
+                "Body Type: Short & Lean",
+                "Club: Melb. Victory",
+                "Nation: Spain"
+            ];
+
+            ctx.fillStyle = "#ddd";
+            bioY += 50;
+            bioData.forEach(line => {
+                ctx.fillText(line, 920, bioY);
+                bioY += 40;
+            });
+        }
+
+        function downloadImage() {
+            const link = document.createElement('a');
+            link.download = 'player-card-visual.png';
+            link.href = document.getElementById('mainCanvas').toDataURL();
+            link.click();
+        }
+        
+        // Init
+        window.onload = generateImage;
+    </script>
+</body>
+</html>
